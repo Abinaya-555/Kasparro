@@ -17,6 +17,107 @@ import { runConsistencyChecks } from "../consistency.service";
 
 const normalize = (s: string) => s.trim().replace(/\s+/g, " ");
 
+function pickTopMissingSignals(missingAttributes: string[], max = 3): string[] {
+  const normalized = missingAttributes.map((m) => normalize(m));
+  const unique = Array.from(new Set(normalized)).filter(Boolean);
+  return unique.slice(0, max);
+}
+
+function buildRepresentation(params: {
+  category: string;
+  missingAttributes: string[];
+  clarityIssues: string[];
+  title: string;
+  description: string;
+  perception: { current: string; ideal: string };
+  improvements: { title: string; keyAttributes: Array<{ name: string; value: string }>; benefits: string[]; useCase: string };
+  score: { grade: "Critical" | "Poor" | "Fair" | "Good" | "Excellent"; breakdown: { matchability: number } };
+  priorities: Array<{ issue: string; impact: "high" | "medium" | "low"; reason: string }>;
+}) {
+  const missingSignals = pickTopMissingSignals(params.missingAttributes, 4);
+  const matchability = params.score.breakdown.matchability;
+
+  const titleLen = normalize(params.title).length;
+  const descLen = normalize(params.description).length;
+  const insufficientInfo =
+    titleLen < 6 ||
+    descLen < 40 ||
+    params.clarityIssues.some((i) => i.toLowerCase().includes("too short"));
+
+  const confidence: "low" | "medium" | "high" =
+    insufficientInfo || matchability <= 9 || missingSignals.length >= 3
+      ? "low"
+      : matchability <= 17
+        ? "medium"
+        : "high";
+
+  const severity: "low" | "medium" | "high" =
+    params.score.grade === "Critical" || params.score.grade === "Poor"
+      ? "high"
+      : params.score.grade === "Fair"
+        ? "medium"
+        : "low";
+
+  const missingSignalsText = missingSignals.length ? missingSignals.slice(0, 3).join(", ") : "";
+
+  const currentSummary = insufficientInfo
+    ? "Not enough information for AI to understand this product. The title or description is too short to tell what it is and who it’s for."
+    : confidence === "low"
+      ? missingSignals.length
+        ? `AI can’t clearly understand who this product is for because details like ${missingSignalsText} are missing.`
+        : "AI understands this only in a generic way because the listing doesn’t explain the use case and key details."
+      : `AI understands what this product is and who it’s for with ${confidence} confidence.`;
+
+  const idealSummary =
+    params.perception.ideal?.trim()
+      ? params.perception.ideal
+      : params.improvements.title?.trim()
+        ? `This should be positioned as “${normalize(params.improvements.title)}” with a clear use case and benefits.`
+        : "This should be positioned clearly with a specific use case and benefits.";
+
+  const topPriority = params.priorities.find((p) => p.impact === "high") ?? params.priorities[0];
+  const gapSummary = insufficientInfo
+    ? "Because the listing is too short, AI can’t confidently place this product in the right searches. Add a clearer title and a longer description."
+    : missingSignals.length
+      ? `Because ${missingSignals.slice(0, 2).join(" and ")} are missing, your product is less likely to appear for relevant searches.`
+      : topPriority
+        ? `The listing doesn’t clearly explain the main benefit and use case, so AI can misunderstand the product.`
+        : `AI understanding is already well aligned. Only small tweaks may be needed.`;
+
+  const keyAttributes = params.improvements.keyAttributes
+    .map((a) => `${normalize(a.name)}: ${normalize(a.value)}`)
+    .filter(Boolean)
+    .slice(0, 5);
+
+  const actionsNeeded: string[] = [];
+  if (insufficientInfo) {
+    actionsNeeded.push("Write a clearer title that names the product and its main benefit.");
+    actionsNeeded.push("Expand the description with who it’s for, what it does, and how to use it.");
+  } else {
+    if (missingSignals.length) actionsNeeded.push(`Add missing details: ${missingSignals.slice(0, 3).join(", ")}.`);
+    actionsNeeded.push("State who this product is for in the first 1–2 lines.");
+    if (params.improvements.useCase?.trim()) actionsNeeded.push(`Add a simple use-case line: “${normalize(params.improvements.useCase)}”.`);
+  }
+
+  return {
+    current: {
+      summary: currentSummary,
+      confidence,
+      signalsMissing: missingSignals,
+    },
+    ideal: {
+      summary: idealSummary,
+      keyAttributes,
+      targetUseCase: normalize(params.improvements.useCase || ""),
+    },
+    gap: {
+      summary: gapSummary,
+      severity,
+      actionsNeeded: Array.from(new Set(actionsNeeded)).slice(0, 4),
+    },
+  };
+}
+
 function detectCategory(title: string, description: string) {
   const text = `${title} ${description}`.toLowerCase();
   const rules: Array<{ category: string; keywords: string[] }> = [
@@ -184,6 +285,18 @@ export async function analyzeProduct(input: ProductAnalysisInput): Promise<Produ
     warnings,
   };
 
+  const representation = buildRepresentation({
+    category,
+    missingAttributes,
+    clarityIssues,
+    title,
+    description,
+    perception,
+    improvements,
+    score,
+    priorities,
+  });
+
   return {
     data: {
       detectedCategory: category,
@@ -191,6 +304,7 @@ export async function analyzeProduct(input: ProductAnalysisInput): Promise<Produ
       clarityIssues,
       issues,
       perception,
+      representation,
       structuredImprovement,
       improvements,
       score,

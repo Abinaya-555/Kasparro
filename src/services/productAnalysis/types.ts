@@ -57,6 +57,23 @@ export type ProductAnalysisResult = {
   clarityIssues: string[];
   issues: AnalysisIssue[];
   perception: AiPerception;
+  representation?: {
+    current: {
+      summary: string;
+      confidence: "low" | "medium" | "high";
+      signalsMissing: string[];
+    };
+    ideal: {
+      summary: string;
+      keyAttributes: string[];
+      targetUseCase: string;
+    };
+    gap: {
+      summary: string;
+      severity: "low" | "medium" | "high";
+      actionsNeeded: string[];
+    };
+  };
   structuredImprovement: StructuredImprovement;
   improvements: {
     title: string;
